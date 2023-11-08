@@ -1,6 +1,6 @@
 module github.com/golang-cz/looper
 
-go 1.21.3
+go 1.20
 
 require (
 	github.com/go-redsync/redsync/v4 v4.11.0
