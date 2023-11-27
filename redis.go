@@ -1,55 +1,55 @@
 package looper
 
-// inpired by https://github.com/go-co-op/gocron-redis-lock
-
 import (
 	"context"
-	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/redis/go-redis/v9"
 )
 
-var (
-	ErrFailedToConnectToRedis = errors.New("looper - failed to connect to redis")
-	ErrFailedToObtainLock     = errors.New("looper - failed to obtain lock")
-	ErrFailedToReleaseLock    = errors.New("looper - failed to release lock")
-)
+// redisOptions := &redis.Options{
+//     Addr: conf.Redis.Host,
+// }
+//
+// redisClient := redis.NewClient(redisOptions)
+//
+// looperRedis, err := looper.RedisLocker(ctx, redisClient)
+// if err != nil {
+//     return err
+// }
 
-type locker interface {
-	lock(ctx context.Context, key string) (lock, error)
-}
-
-type lock interface {
-	unlock(ctx context.Context) error
-}
-
-func newRedisLocker(ctx context.Context, r redis.UniversalClient, options ...redsync.Option) (locker, error) {
-	err := r.Ping(ctx).Err()
+// RedisLocker provides an implementation of the Locker interface using
+// redis for storage.
+func RedisLocker(ctx context.Context, rc redis.UniversalClient) (locker, error) {
+	err := rc.Ping(ctx).Err()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrFailedToConnectToRedis, err)
+		return nil, fmt.Errorf("%s: %w", ErrFailedToConnectToLocker, err)
 	}
 
-	return newLocker(r, options...), nil
-}
-
-func newLocker(r redis.UniversalClient, options ...redsync.Option) locker {
-	pool := goredis.NewPool(r)
+	pool := goredis.NewPool(rc)
 	rs := redsync.New(pool)
-	return &redisLocker{rs: rs, options: options}
+
+	l := redisLocker{rs: rs}
+
+	return &l, nil
 }
 
+// Locker
 var _ locker = (*redisLocker)(nil)
 
 type redisLocker struct {
-	rs      *redsync.Redsync
-	options []redsync.Option
+	rs *redsync.Redsync
 }
 
-func (r *redisLocker) lock(ctx context.Context, key string) (lock, error) {
-	mu := r.rs.NewMutex(key, r.options...)
+func (r *redisLocker) lock(ctx context.Context, key string, timeout time.Duration) (lock, error) {
+	options := []redsync.Option{
+		redsync.WithTries(1),
+		redsync.WithExpiry(timeout + time.Second),
+	}
+	mu := r.rs.NewMutex(key, options...)
 	err := mu.LockContext(ctx)
 	if err != nil {
 		return nil, ErrFailedToObtainLock
@@ -62,6 +62,7 @@ func (r *redisLocker) lock(ctx context.Context, key string) (lock, error) {
 	return rl, nil
 }
 
+// Lock
 var _ lock = (*redisLock)(nil)
 
 type redisLock struct {

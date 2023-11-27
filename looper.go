@@ -7,9 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-redsync/redsync/v4"
-	"github.com/redis/go-redis/v9"
 )
 
 // Panic handler
@@ -29,11 +26,11 @@ func SetPanicHandler(handler PanicHandlerFunc) {
 // Looper
 type Looper struct {
 	running     bool
-	jobs        []*Job
 	startupTime time.Duration
+	locker      locker
 	hooks       hooks
 	mu          sync.RWMutex
-	redisClient *redis.Client
+	jobs        []*Job
 }
 
 type (
@@ -49,13 +46,18 @@ type hooks struct {
 }
 
 type Config struct {
+	// Locker for jobs
+	//
+	// Options:
+	// PostgresLocker(ctx context.Context, db *sql.DB, table string)
+	// RedisLocker(ctx context.Context, rc redis.UniversalClient)
+	Locker locker
+
 	// Startup time ensuring a consistent delay between registered jobs on start of looper.
 	//
 	// StartupTime = 1 second; 5 registered jobs; Jobs would be initiated
 	// with 200ms delay
 	StartupTime time.Duration
-
-	RedisClient *redis.Client
 }
 
 type JobFn func(ctx context.Context) error
@@ -94,7 +96,7 @@ type Job struct {
 	// Count of unsuccessful job runs.
 	RunCountError uint64
 
-	// Copy of last error, that occurred.
+	// Copy of last error, that occured.
 	LastError error
 
 	// Hook function before job runs.
@@ -106,11 +108,11 @@ type Job struct {
 	// Hook function after job runs unsuccessfully.
 	AfterJobError HookAfterJobError
 
-	// If the job should use redis locker
+	// If the job should use locker
 	WithLocker bool
 
 	// Locker
-	locker *locker
+	locker locker
 
 	// Context cancel
 	contextCancel context.CancelFunc
@@ -119,7 +121,7 @@ type Job struct {
 }
 
 func New(config Config) *Looper {
-	return &Looper{
+	l := &Looper{
 		jobs:        []*Job{},
 		startupTime: setDefaultDuration(config.StartupTime, time.Second),
 		hooks: hooks{
@@ -127,8 +129,14 @@ func New(config Config) *Looper {
 			afterJob:      func(jobName string, duration time.Duration) {},
 			afterJobError: func(jobName string, duration time.Duration, err error) {},
 		},
-		redisClient: config.RedisClient,
+		locker: newNopLocker(),
 	}
+
+	if config.Locker != nil {
+		l.locker = config.Locker
+	}
+
+	return l
 }
 
 func (l *Looper) RegisterHooks(
@@ -141,7 +149,7 @@ func (l *Looper) RegisterHooks(
 	l.hooks.afterJob = afterJob
 }
 
-func (l *Looper) AddJob(ctx context.Context, jobInput *Job) error {
+func (l *Looper) AddJob(ctx context.Context, jobInput *Job) (err error) {
 	if jobInput == nil {
 		return nil
 	}
@@ -175,16 +183,8 @@ func (l *Looper) AddJob(ctx context.Context, jobInput *Job) error {
 		AfterJob:         afterJob,
 		AfterJobError:    afterJobError,
 		WithLocker:       jobInput.WithLocker,
+		locker:           l.locker,
 		mu:               sync.RWMutex{},
-	}
-
-	if jobInput.WithLocker && l.redisClient != nil {
-		locker, err := newRedisLocker(ctx, l.redisClient, redsync.WithTries(1), redsync.WithExpiry(j.Timeout+time.Second))
-		if err != nil {
-			return fmt.Errorf("new redis locker for job %s: %w", j.Name, err)
-		}
-
-		j.locker = &locker
 	}
 
 	l.jobs = append(l.jobs, j)
@@ -325,13 +325,11 @@ func (j *Job) start() {
 		j.contextCancel = cancel
 		j.Running = true
 
-		var redisLock lock
+		var lo lock
 
 		if j.WithLocker {
-			lo := *j.locker
-			redisLock, errLock = lo.lock(ctxLock, j.Name)
+			lo, errLock = j.locker.lock(ctxLock, j.Name, j.Timeout)
 			if errors.Is(errLock, ErrFailedToObtainLock) {
-				// time.Sleep(j.WaitAfterSuccess)
 				time.Sleep(time.Duration(time.Second))
 				j.Running = false
 				cancel()
@@ -353,7 +351,7 @@ func (j *Job) start() {
 		}
 
 		if j.WithLocker && errLock == nil {
-			errLock = redisLock.unlock(ctxLock)
+			errLock = lo.unlock(ctxLock)
 		}
 
 		if err != nil || errLock != nil {
