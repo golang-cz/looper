@@ -14,13 +14,6 @@ var (
 	ErrFailedToCheckLockExistence = errors.New("looper - failed to check lock existence")
 )
 
-type lockerKind int
-
-const (
-	lockerNop lockerKind = iota
-	lockerRedis
-)
-
 // Lock if an error is returned by lock, the job will not be scheduled.
 type locker interface {
 	lock(ctx context.Context, key string, timeout time.Duration) (lock, error)
