@@ -173,7 +173,7 @@ func (l *Looper) AddJob(ctx context.Context, jobInput *Job) (err error) {
 		Timeout:          setDefaultDuration(jobInput.Timeout, time.Minute),
 		WaitAfterSuccess: setDefaultDuration(jobInput.WaitAfterSuccess, time.Second),
 		WaitAfterError:   setDefaultDuration(jobInput.WaitAfterError, time.Second),
-		Active:           true,
+		Active:           jobInput.Active,
 		BeforeJob:        beforeJob,
 		AfterJob:         afterJob,
 		AfterJobError:    afterJobError,

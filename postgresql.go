@@ -11,24 +11,23 @@ const defaultTableName = "looper_lock"
 
 // PostgresLocker provides an implementation of the Locker interface using
 // a PostgreSQL table for storage.
-func PostgresLocker(ctx context.Context, db *sql.DB, table string) (locker, error) {
-	err := db.PingContext(ctx)
-	if err != nil {
+func PostgresLocker(ctx context.Context, db *sql.DB, tableName string) (locker, error) {
+	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFailedToConnectToLocker, err)
 	}
 
-	if table == "" {
-		table = defaultTableName
+	if tableName == "" {
+		tableName = defaultTableName
 	}
+
 	// Ensure the lock table exists, create it if necessary
-	err = createLockTable(ctx, db, table)
-	if err != nil {
+	if err := createLockTable(ctx, db, tableName); err != nil {
 		return nil, err
 	}
 
 	pl := &postgresLocker{
 		db:    db,
-		table: table,
+		table: tableName,
 	}
 
 	return pl, nil
