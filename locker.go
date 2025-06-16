@@ -15,11 +15,35 @@ var (
 )
 
 // Lock if an error is returned by lock, the job will not be scheduled.
-type locker interface {
-	lock(ctx context.Context, key string, timeout time.Duration) (lock, error)
+type Locker interface {
+	Lock(ctx context.Context, key string, timeout time.Duration) (Lock, error)
 }
 
-// lock represents an obtained lock
-type lock interface {
-	unlock(ctx context.Context) error
+// Lock represents an obtained Lock
+type Lock interface {
+	Unlock(ctx context.Context) error
+}
+
+// Nop locker
+
+func newNopLocker() Locker {
+	return &nopLocker{}
+}
+
+// Locker
+var _ Locker = (*nopLocker)(nil)
+
+type nopLocker struct{}
+
+func (r *nopLocker) Lock(_ context.Context, _ string, _ time.Duration) (Lock, error) {
+	return &nopLock{}, nil
+}
+
+// Lock
+var _ Lock = (*nopLock)(nil)
+
+type nopLock struct{}
+
+func (r *nopLock) Unlock(ctx context.Context) error {
+	return nil
 }
