@@ -1,6 +1,7 @@
 package looper
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 )
 
 // Panic handler
-type PanicHandlerFunc func(jobName string, recoverData interface{})
+type PanicHandlerFunc func(jobName string, recoverData any)
 
 var (
 	panicHandler      PanicHandlerFunc
@@ -30,7 +31,7 @@ type Looper struct {
 	startupTime time.Duration
 	hooks       hooks
 	mu          sync.RWMutex
-	locker      locker
+	locker      Locker
 }
 
 type (
@@ -52,7 +53,7 @@ type Config struct {
 	// with 200ms delay
 	StartupTime time.Duration
 
-	Locker locker
+	Locker Locker
 }
 
 type JobFn func(ctx context.Context) error
@@ -107,7 +108,7 @@ type Job struct {
 	WithLocker bool
 
 	// Locker
-	locker locker
+	locker Locker
 
 	// Context cancel
 	contextCancel context.CancelFunc
@@ -115,10 +116,12 @@ type Job struct {
 	mu sync.RWMutex
 }
 
-func New(config Config) *Looper {
+func New(cfg *Config) *Looper {
+	cfg = cmp.Or(cfg, &Config{})
+
 	l := &Looper{
 		jobs:        []*Job{},
-		startupTime: setDefaultDuration(config.StartupTime, time.Second),
+		startupTime: setDefaultDuration(cfg.StartupTime, time.Second),
 		hooks: hooks{
 			beforeJob:     func(jobName string) {},
 			afterJob:      func(jobName string, duration time.Duration) {},
@@ -127,8 +130,8 @@ func New(config Config) *Looper {
 		locker: newNopLocker(),
 	}
 
-	if config.Locker != nil {
-		l.locker = config.Locker
+	if cfg.Locker != nil {
+		l.locker = cfg.Locker
 	}
 
 	return l
@@ -314,12 +317,16 @@ func (j *Job) startLoop() {
 
 		j.BeforeJob(j.Name)
 		err := j.start()
+		elapsed := time.Since(start)
+
 		if err != nil {
-			j.AfterJobError(j.Name, time.Since(start), err)
+			j.AfterJobError(j.Name, elapsed, err)
 			time.Sleep(j.WaitAfterError)
 		} else {
-			j.AfterJob(j.Name, time.Since(start))
-			time.Sleep(j.WaitAfterSuccess)
+			j.AfterJob(j.Name, elapsed)
+			if remaining := j.WaitAfterSuccess - elapsed; remaining > 0 {
+				time.Sleep(remaining)
+			}
 		}
 	}
 }
@@ -368,17 +375,17 @@ func (j *Job) start() error {
 	return nil
 }
 
-func (j *Job) lock() (lo lock, err error) {
+func (j *Job) lock() (lo Lock, err error) {
 	if j.WithLocker {
-		lo, err = j.locker.lock(context.Background(), j.Name, j.Timeout)
+		lo, err = j.locker.Lock(context.Background(), j.Name, j.Timeout)
 	}
 
 	return lo, err
 }
 
-func (j *Job) unlock(lo lock) (err error) {
+func (j *Job) unlock(lo Lock) (err error) {
 	if j.WithLocker {
-		return lo.unlock(context.Background())
+		return lo.Unlock(context.Background())
 	}
 
 	return nil

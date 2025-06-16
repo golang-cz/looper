@@ -1,19 +1,21 @@
-package looper
+package lockerpostgresql
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/golang-cz/looper"
 )
 
 const defaultTableName = "looper_lock"
 
 // PostgresLocker provides an implementation of the Locker interface using
 // a PostgreSQL table for storage.
-func PostgresLocker(ctx context.Context, db *sql.DB, tableName string) (locker, error) {
+func PostgresLocker(ctx context.Context, db *sql.DB, tableName string) (looper.Locker, error) {
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrFailedToConnectToLocker, err)
+		return nil, fmt.Errorf("%w: %v", looper.ErrFailedToConnectToLocker, err)
 	}
 
 	if tableName == "" {
@@ -34,7 +36,7 @@ func PostgresLocker(ctx context.Context, db *sql.DB, tableName string) (locker, 
 }
 
 // Locker
-var _ locker = (*postgresLocker)(nil)
+var _ looper.Locker = (*postgresLocker)(nil)
 
 type postgresLocker struct {
 	db    *sql.DB
@@ -55,7 +57,7 @@ func createLockTable(ctx context.Context, db *sql.DB, table string) error {
 		),
 	).Scan(&tableExists)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrFailedToCheckLockExistence, err)
+		return fmt.Errorf("%w: %v", looper.ErrFailedToCheckLockExistence, err)
 	}
 
 	if !tableExists {
@@ -69,59 +71,50 @@ func createLockTable(ctx context.Context, db *sql.DB, table string) error {
 				table,
 			))
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrFailedToCreateLockTable, err)
+			return fmt.Errorf("%w: %v", looper.ErrFailedToCreateLockTable, err)
 		}
 	}
 
 	return nil
 }
 
-func (p *postgresLocker) lock(
-	ctx context.Context,
-	key string,
-	timeout time.Duration,
-) (lock, error) {
+func (p *postgresLocker) Lock(ctx context.Context, key string, timeout time.Duration) (looper.Lock, error) {
 	// Create a row in the lock table to acquire the lock
-	_, err := p.db.ExecContext(
-		ctx,
-		fmt.Sprintf(`
+	q := fmt.Sprintf(`
 			INSERT INTO %s (job_name) 
 			VALUES ('%s');`,
-			p.table,
-			key,
-		))
-	if err != nil {
-		var createdAt time.Time
-		err := p.db.QueryRowContext(
-			ctx,
-			fmt.Sprintf(`
+		p.table,
+		key,
+	)
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		q := fmt.Sprintf(`
 				SELECT created_at
 				FROM %s
 				WHERE job_name = '%s';`,
-				p.table,
-				key,
-			)).Scan(&createdAt)
-		if err != nil {
-			return nil, ErrFailedToCheckLockExistence
+			p.table,
+			key,
+		)
+
+		var createdAt time.Time
+		if err := p.db.QueryRowContext(ctx, q).Scan(&createdAt); err != nil {
+			return nil, looper.ErrFailedToCheckLockExistence
 		}
 
 		if createdAt.Before(time.Now().Add(-timeout)) {
-			_, err := p.db.ExecContext(
-				ctx,
-				fmt.Sprintf(`
+			q := fmt.Sprintf(`
 					DELETE FROM %s
 					WHERE job_name = '%s';`,
-					p.table,
-					key,
-				))
-			if err != nil {
-				return nil, ErrFailedToReleaseLock
+				p.table,
+				key,
+			)
+			if _, err := p.db.ExecContext(ctx, q); err != nil {
+				return nil, looper.ErrFailedToReleaseLock
 			}
 
-			return p.lock(ctx, key, timeout)
+			return p.Lock(ctx, key, timeout)
 		}
 
-		return nil, ErrFailedToObtainLock
+		return nil, looper.ErrFailedToObtainLock
 	}
 
 	pl := &postgresLock{
@@ -134,7 +127,7 @@ func (p *postgresLocker) lock(
 }
 
 // Lock
-var _ lock = (*postgresLock)(nil)
+var _ looper.Lock = (*postgresLock)(nil)
 
 type postgresLock struct {
 	db    *sql.DB
@@ -142,7 +135,7 @@ type postgresLock struct {
 	key   string
 }
 
-func (p *postgresLock) unlock(ctx context.Context) error {
+func (p *postgresLock) Unlock(ctx context.Context) error {
 	// Release the lock by deleting the row
 	_, err := p.db.ExecContext(
 		ctx,
@@ -153,7 +146,7 @@ func (p *postgresLock) unlock(ctx context.Context) error {
 			p.key,
 		))
 	if err != nil {
-		return ErrFailedToReleaseLock
+		return looper.ErrFailedToReleaseLock
 	}
 
 	return nil
