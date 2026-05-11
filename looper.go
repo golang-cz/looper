@@ -355,7 +355,14 @@ func (j *Job) start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), j.Timeout)
 	defer cancel()
 
+	// Lock j.mu around the contextCancel write. Looper.Stop reads this field
+	// inside j.mu.Lock to cancel a running job mid-flight; without the lock
+	// here the read/write pair is a data race (caught by -race). Pattern
+	// matches j.startLoop's defer at line ~302 which already nils the field
+	// under the lock.
+	j.mu.Lock()
 	j.contextCancel = cancel
+	j.mu.Unlock()
 
 	err = j.run(ctx)
 	if err != nil {
